@@ -35,4 +35,6 @@ Luac0re is a [mast1c0re](https://cturt.github.io/mast1c0re.html) variation that 
 
 ## Disclaimer
 
-This tool is provided as-is for research and development purposes only. Use at your own risk. The developers are not responsible for any damage, data loss, or other consequences resulting from the use of this software.
+This tool is provided as-is for research and development purposes only.  
+Use at your own risk.  
+The developers are not responsible for any damage, data loss, or other consequences resulting from the use of this software.  
