@@ -4,7 +4,7 @@ Luac0re is a [mast1c0re](https://cturt.github.io/mast1c0re.html) variation that 
 
 ## Overview
 
-The original [mast1c0re for Okage](https://github.com/McCaulay/mast1c0re) uses PS2 code execution only, which requires the PS2SDK to compile code. 
+The original [mast1c0re for Okage](https://github.com/McCaulay/mast1c0re) uses PS2 code execution only, which requires the PS2SDK to compile code.  
 Luac0re uses minimal PS2 shellcode to escape ps2emu, then leverages the Lua 5.3 interpreter already embedded in the main executable (originally intended for ps2emu configuration) to simplify code writing and execution.
 
 ## Requirements
